@@ -3,17 +3,16 @@ const { Client, LocalAuth } = pkg;
 import qrcode from "qrcode-terminal";
 import chalk from "chalk";
 import cliProgress from "cli-progress";
-import { appendToFile, writeSummaryReport, ensureDir } from "./fileUtils.js";
+import {
+  writeCsvHeader,
+  appendCsvRow,
+  writeSummaryReport,
+  ensureDir,
+} from "./fileUtils.js";
 import path from "path";
 
-/**
- * Sleep helper
- */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Format milliseconds into a human-readable duration.
- */
 function formatDuration(ms) {
   const totalSec = Math.floor(ms / 1000);
   const min = Math.floor(totalSec / 60);
@@ -22,7 +21,7 @@ function formatDuration(ms) {
 }
 
 /**
- * Initialize the WhatsApp Web client and wait until it's ready.
+ * Initialize WhatsApp Web client and wait until ready.
  */
 async function initClient(saveSession) {
   const authStrategy = saveSession
@@ -58,23 +57,21 @@ async function initClient(saveSession) {
     });
 
     client.on("authenticated", () => {
-      console.log(chalk.green("\n✔  Authenticated successfully!"));
+      console.log(chalk.green("\n✔  Authenticated!"));
       if (saveSession) {
         console.log(chalk.gray("   Session saved — no QR scan needed next time.\n"));
       }
     });
 
-    client.on("auth_failure", (msg) => {
-      reject(new Error(`Authentication failed: ${msg}`));
-    });
+    client.on("auth_failure", (msg) => reject(new Error(`Auth failed: ${msg}`)));
 
     client.on("ready", () => {
-      console.log(chalk.green("✔  WhatsApp client is ready. Starting checks...\n"));
+      console.log(chalk.green("✔  WhatsApp client ready. Starting checks...\n"));
       resolve(client);
     });
 
     client.on("disconnected", (reason) => {
-      console.log(chalk.red(`\n⚠  Client disconnected: ${reason}`));
+      console.log(chalk.red(`\n⚠  Disconnected: ${reason}`));
     });
 
     client.initialize();
@@ -82,12 +79,47 @@ async function initClient(saveSession) {
 }
 
 /**
- * Main checker function.
+ * Resolve the best available name for a contact.
+ *
+ * Priority:
+ *   1. contact.name     — saved in your phone's address book (most reliable)
+ *   2. contact.pushname — the person's own WhatsApp display name
+ *   3. ""               — registered on WA but no name available
+ *
+ * Returns { name, nameSource }
  */
-export async function checkNumbers({ numbers, outputPath, invalidPath, delay, saveSession }) {
-  // Ensure output directories exist
+async function resolveName(client, wid) {
+  try {
+    const contact = await client.getContactById(wid);
+
+    if (contact.name && contact.name.trim()) {
+      return { name: contact.name.trim(), nameSource: "contact" };
+    }
+    if (contact.pushname && contact.pushname.trim()) {
+      return { name: contact.pushname.trim(), nameSource: "pushname" };
+    }
+    return { name: "", nameSource: "unknown" };
+  } catch {
+    return { name: "", nameSource: "unknown" };
+  }
+}
+
+/**
+ * Main checker — iterates numbers, checks WA registration, fetches names, writes CSV.
+ */
+export async function checkNumbers({
+  numbers,
+  outputPath,
+  invalidPath,
+  delay,
+  saveSession,
+}) {
   ensureDir(outputPath);
   if (invalidPath) ensureDir(invalidPath);
+
+  // Write CSV headers upfront
+  writeCsvHeader(outputPath);
+  if (invalidPath) writeCsvHeader(invalidPath);
 
   let client;
   try {
@@ -97,16 +129,15 @@ export async function checkNumbers({ numbers, outputPath, invalidPath, delay, sa
     process.exit(1);
   }
 
-  // Progress bar
   const bar = new cliProgress.SingleBar(
     {
       format:
         chalk.cyan(" {bar}") +
         " {percentage}% | {value}/{total} | " +
         chalk.green("✔ {valid}") +
-        " valid | " +
+        " | " +
         chalk.red("✖ {invalid}") +
-        " invalid | ETA: {eta}s",
+        " | ETA: {eta}s",
       barCompleteChar: "█",
       barIncompleteChar: "░",
       hideCursor: true,
@@ -117,7 +148,6 @@ export async function checkNumbers({ numbers, outputPath, invalidPath, delay, sa
   let validCount = 0;
   let invalidCount = 0;
   const startTime = Date.now();
-  const results = [];
 
   bar.start(numbers.length, 0, { valid: 0, invalid: 0 });
 
@@ -127,25 +157,27 @@ export async function checkNumbers({ numbers, outputPath, invalidPath, delay, sa
     try {
       const isRegistered = await client.isRegisteredUser(wid);
 
-      results.push({ number, isRegistered });
-
       if (isRegistered) {
+        // Fetch name — runs in parallel with the delay below
+        const { name, nameSource } = await resolveName(client, wid);
+
+        appendCsvRow(outputPath, { number, name, nameSource });
         validCount++;
-        appendToFile(outputPath, number);
       } else {
+        if (invalidPath) {
+          appendCsvRow(invalidPath, { number, name: "", nameSource: "not_registered" });
+        }
         invalidCount++;
-        if (invalidPath) appendToFile(invalidPath, number);
       }
     } catch (err) {
-      // On error, treat as unknown — log and skip
-      results.push({ number, isRegistered: false, error: err.message });
+      if (invalidPath) {
+        appendCsvRow(invalidPath, { number, name: "", nameSource: `error: ${err.message}` });
+      }
       invalidCount++;
-      if (invalidPath) appendToFile(invalidPath, number);
     }
 
     bar.update(validCount + invalidCount, { valid: validCount, invalid: invalidCount });
 
-    // Delay between checks to avoid rate limiting
     if (delay > 0) await sleep(delay);
   }
 
@@ -153,7 +185,6 @@ export async function checkNumbers({ numbers, outputPath, invalidPath, delay, sa
 
   const duration = formatDuration(Date.now() - startTime);
 
-  // Write summary report
   const reportPath = writeSummaryReport({
     outputPath,
     total: numbers.length,
@@ -162,18 +193,17 @@ export async function checkNumbers({ numbers, outputPath, invalidPath, delay, sa
     duration,
   });
 
-  // Print results
-  console.log("\n" + chalk.bold("─".repeat(50)));
+  console.log("\n" + chalk.bold("─".repeat(52)));
   console.log(chalk.bold("  📊  Results Summary"));
-  console.log(chalk.bold("─".repeat(50)));
+  console.log(chalk.bold("─".repeat(52)));
   console.log(`  Total checked  : ${chalk.white.bold(numbers.length)}`);
   console.log(`  Has WhatsApp   : ${chalk.green.bold(validCount)}`);
   console.log(`  No WhatsApp    : ${chalk.red.bold(invalidCount)}`);
   console.log(`  Duration       : ${chalk.yellow(duration)}`);
-  console.log(chalk.bold("─".repeat(50)));
-  console.log(`\n  ${chalk.green("✔")} Valid numbers saved to  : ${chalk.white(outputPath)}`);
+  console.log(chalk.bold("─".repeat(52)));
+  console.log(`\n  ${chalk.green("✔")} Valid CSV saved to      : ${chalk.white(outputPath)}`);
   if (invalidPath) {
-    console.log(`  ${chalk.red("✖")} Invalid numbers saved to: ${chalk.white(invalidPath)}`);
+    console.log(`  ${chalk.red("✖")} Invalid CSV saved to    : ${chalk.white(invalidPath)}`);
   }
   console.log(`  📄 Report saved to       : ${chalk.white(reportPath)}`);
   console.log();

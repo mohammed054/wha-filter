@@ -3,8 +3,9 @@ import path from "path";
 
 /**
  * Read phone numbers from a file.
- * Supports: one number per line, CSV (first column), or space-separated.
- * Strips +, spaces, dashes. Skips blank lines and comments (#).
+ * Supports: plain text (one per line), or CSV (reads first column only).
+ * Strips +, spaces, dashes, parentheses. Skips blank lines and # comments.
+ * Numbers must already be in international format (country code included).
  */
 export function readNumbersFromFile(filePath) {
   const content = fs.readFileSync(filePath, "utf-8");
@@ -17,49 +18,74 @@ export function readNumbersFromFile(filePath) {
     // Skip blank lines and comments
     if (!line || line.startsWith("#")) continue;
 
-    // Handle CSV: take first column
+    // If CSV-ish, take only the first column
     const cell = line.split(",")[0].trim();
 
     // Normalize: strip +, spaces, dashes, parentheses
     const normalized = cell.replace(/[\s\-\(\)]/g, "").replace(/^\+/, "");
 
-    // Basic validation: must be 7–15 digits
+    // Must be 7–15 digits (ITU E.164 range)
     if (/^\d{7,15}$/.test(normalized)) {
       numbers.push(normalized);
     }
   }
 
-  // Deduplicate
+  // Deduplicate while preserving order
   return [...new Set(numbers)];
 }
 
 /**
- * Append a number to a file (creates file if it doesn't exist).
+ * Escape a CSV field value (wrap in quotes if it contains comma/quote/newline).
  */
-export function appendToFile(filePath, number) {
-  fs.appendFileSync(filePath, number + "\n", "utf-8");
+function csvField(value) {
+  const str = String(value ?? "");
+  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
 }
 
 /**
- * Write a summary report next to the output file.
+ * Write the CSV header row to a file (overwrites if exists).
+ */
+export function writeCsvHeader(filePath) {
+  fs.writeFileSync(filePath, "number,name,name_source\n", "utf-8");
+}
+
+/**
+ * Append one result row to a CSV file.
+ * Fields: number, name, name_source ("contact" | "pushname" | "unknown")
+ */
+export function appendCsvRow(filePath, { number, name, nameSource }) {
+  const row = [csvField(number), csvField(name), csvField(nameSource)].join(",");
+  fs.appendFileSync(filePath, row + "\n", "utf-8");
+}
+
+/**
+ * Write a plain-text summary report alongside the output CSV.
  */
 export function writeSummaryReport({ outputPath, total, valid, invalid, duration }) {
   const reportPath = outputPath.replace(/(\.[^.]+)?$/, "_report.txt");
   const lines = [
-    "=== WhatsApp Checker Report ===",
-    `Date       : ${new Date().toLocaleString()}`,
-    `Total      : ${total}`,
-    `Valid (WA) : ${valid}`,
-    `Invalid    : ${invalid}`,
-    `Duration   : ${duration}`,
-    `Output     : ${outputPath}`,
+    "=== WhatsApp Checker — Run Report ===",
+    `Date        : ${new Date().toLocaleString()}`,
+    `Total       : ${total}`,
+    `Has WA      : ${valid}`,
+    `No WA       : ${invalid}`,
+    `Duration    : ${duration}`,
+    `Output CSV  : ${outputPath}`,
+    "",
+    "name_source legend:",
+    "  contact   = name from your phone's contact list",
+    "  pushname  = the person's own WhatsApp display name",
+    "  unknown   = registered on WA but name could not be fetched",
   ];
   fs.writeFileSync(reportPath, lines.join("\n") + "\n", "utf-8");
   return reportPath;
 }
 
 /**
- * Ensure a directory exists for a given file path.
+ * Ensure the directory for a given file path exists.
  */
 export function ensureDir(filePath) {
   const dir = path.dirname(filePath);

@@ -1,0 +1,12 @@
+=== WhatsApp Checker — Run Report ===
+Date        : 4/23/2026, 8:42:13 PM
+Total       : 6
+Has WA      : 1
+No WA       : 5
+Duration    : 11s
+Output CSV  : C:\Users\moham\OneDrive\Desktop\github\wha-filter\whatsapp_valid.txt
+
+name_source legend:
+  contact   = name from your phone's contact list
+  pushname  = the person's own WhatsApp display name
+  unknown   = registered on WA but name could not be fetched
