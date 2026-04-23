@@ -1,0 +1,16 @@
+# WA Checker - Sample Input File
+# Format: one phone number per line (international format, country code required)
+# Lines starting with # are ignored
+# Spaces, dashes, parentheses, and leading + are stripped automatically
+
+# UAE numbers
+971501234567
+971521234567
++971 55 123 4567
+
+# US numbers
++1 (555) 000-1234
+15550005678
+
+# UK numbers
++44 7700 900123
