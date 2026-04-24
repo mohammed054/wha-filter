@@ -1,12 +1,28 @@
 === WhatsApp Checker — Run Report ===
-Date        : 4/23/2026, 8:42:13 PM
-Total       : 6
-Has WA      : 1
-No WA       : 5
-Duration    : 11s
-Output CSV  : C:\Users\moham\OneDrive\Desktop\github\wha-filter\whatsapp_valid.txt
+Date            : 4/24/2026, 2:47:24 PM
+Duration        : 9s
 
-name_source legend:
-  contact   = name from your phone's contact list
-  pushname  = the person's own WhatsApp display name
-  unknown   = registered on WA but name could not be fetched
+── Numbers checked ──────────────────
+Total           : 5
+Has WhatsApp    : 2  (valid: 1  suspicious: 1  blocked: 0)
+No WhatsApp     : 3
+
+── Output files ─────────────────────
+WA numbers CSV  : C:\Users\moham\OneDrive\Desktop\github\wha-filter\whatsapp_valid.csv
+Invalid CSV     : C:\Users\moham\OneDrive\Desktop\github\wha-filter\whatsapp_invalid.csv
+
+── Status legend ────────────────────
+  valid      = registered, has a name or profile picture
+  suspicious = registered but completely anonymous (no name, no profile pic)
+               — could be a burner or spam account
+  blocked    = registered but all contact lookups failed
+               — strong signal the account has blocked you
+  invalid    = not registered on WhatsApp
+
+── name_source legend ───────────────
+  contact    = name from your phone's address book
+  pushname   = the person's own WhatsApp display name
+  none       = registered but no name available
+  blocked    = contact info could not be fetched
+  not_registered = number is not on WhatsApp
+  error      = unexpected error during lookup

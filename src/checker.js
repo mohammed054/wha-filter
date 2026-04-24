@@ -79,33 +79,61 @@ async function initClient(saveSession) {
 }
 
 /**
- * Resolve the best available name for a contact.
+ * Determine full status for a registered number.
  *
- * Priority:
- *   1. contact.name     — saved in your phone's address book (most reliable)
- *   2. contact.pushname — the person's own WhatsApp display name
- *   3. ""               — registered on WA but no name available
+ * Status values:
+ *   valid      — registered, has a name or pushname
+ *   suspicious — registered, but zero name/pushname AND no profile picture
+ *                (burner / spam / freshly-created account)
+ *   blocked    — registered, but contact lookup fails entirely
+ *                (strong signal the account has blocked you)
  *
- * Returns { name, nameSource }
+ * Returns { name, nameSource, status }
  */
-async function resolveName(client, wid) {
+async function resolveRegisteredContact(client, wid) {
+  let contact;
   try {
-    const contact = await client.getContactById(wid);
-
-    if (contact.name && contact.name.trim()) {
-      return { name: contact.name.trim(), nameSource: "contact" };
-    }
-    if (contact.pushname && contact.pushname.trim()) {
-      return { name: contact.pushname.trim(), nameSource: "pushname" };
-    }
-    return { name: "", nameSource: "unknown" };
+    contact = await client.getContactById(wid);
   } catch {
-    return { name: "", nameSource: "unknown" };
+    // Can't retrieve contact info at all — almost certainly blocked
+    return { name: "—", nameSource: "blocked", status: "blocked" };
   }
+
+  // Resolve best available name
+  const rawName =
+    (contact.name && contact.name.trim()) ||
+    (contact.pushname && contact.pushname.trim()) ||
+    "";
+
+  const nameSource = contact.name?.trim()
+    ? "contact"
+    : contact.pushname?.trim()
+    ? "pushname"
+    : "none";
+
+  // Try to fetch profile picture — blocked contacts hide it
+  let hasProfilePic = false;
+  try {
+    const pic = await client.getProfilePicUrl(wid);
+    hasProfilePic = !!pic;
+  } catch {
+    // Silently ignore — some accounts restrict profile pic visibility
+  }
+
+  // Suspicious: registered but completely anonymous (no name, no pic)
+  if (!rawName && !hasProfilePic) {
+    return { name: "—", nameSource: "none", status: "suspicious" };
+  }
+
+  return {
+    name: rawName || "—",
+    nameSource,
+    status: "valid",
+  };
 }
 
 /**
- * Main checker — iterates numbers, checks WA registration, fetches names, writes CSV.
+ * Main checker — iterates numbers, checks WA registration, fetches names, writes CSVs.
  */
 export async function checkNumbers({
   numbers,
@@ -115,11 +143,11 @@ export async function checkNumbers({
   saveSession,
 }) {
   ensureDir(outputPath);
-  if (invalidPath) ensureDir(invalidPath);
+  ensureDir(invalidPath);
 
-  // Write CSV headers upfront
+  // Write CSV headers upfront (overwrites any previous run)
   writeCsvHeader(outputPath);
-  if (invalidPath) writeCsvHeader(invalidPath);
+  writeCsvHeader(invalidPath);
 
   let client;
   try {
@@ -136,6 +164,10 @@ export async function checkNumbers({
         " {percentage}% | {value}/{total} | " +
         chalk.green("✔ {valid}") +
         " | " +
+        chalk.yellow("⚠ {suspicious}") +
+        " | " +
+        chalk.magenta("⛔ {blocked}") +
+        " | " +
         chalk.red("✖ {invalid}") +
         " | ETA: {eta}s",
       barCompleteChar: "█",
@@ -146,10 +178,17 @@ export async function checkNumbers({
   );
 
   let validCount = 0;
+  let suspiciousCount = 0;
+  let blockedCount = 0;
   let invalidCount = 0;
   const startTime = Date.now();
 
-  bar.start(numbers.length, 0, { valid: 0, invalid: 0 });
+  bar.start(numbers.length, 0, {
+    valid: 0,
+    suspicious: 0,
+    blocked: 0,
+    invalid: 0,
+  });
 
   for (const number of numbers) {
     const wid = `${number}@c.us`;
@@ -158,25 +197,41 @@ export async function checkNumbers({
       const isRegistered = await client.isRegisteredUser(wid);
 
       if (isRegistered) {
-        // Fetch name — runs in parallel with the delay below
-        const { name, nameSource } = await resolveName(client, wid);
+        const { name, nameSource, status } = await resolveRegisteredContact(client, wid);
 
-        appendCsvRow(outputPath, { number, name, nameSource });
-        validCount++;
+        // Valid, suspicious, and blocked all go to the valid output (they ARE on WA)
+        appendCsvRow(outputPath, { number, name, nameSource, status });
+
+        if (status === "valid") validCount++;
+        else if (status === "suspicious") suspiciousCount++;
+        else if (status === "blocked") blockedCount++;
       } else {
-        if (invalidPath) {
-          appendCsvRow(invalidPath, { number, name: "", nameSource: "not_registered" });
-        }
+        // Not on WhatsApp — write to invalid file
+        appendCsvRow(invalidPath, {
+          number,
+          name: "—",
+          nameSource: "not_registered",
+          status: "invalid",
+        });
         invalidCount++;
       }
     } catch (err) {
-      if (invalidPath) {
-        appendCsvRow(invalidPath, { number, name: "", nameSource: `error: ${err.message}` });
-      }
+      // Unexpected error — treat as invalid
+      appendCsvRow(invalidPath, {
+        number,
+        name: "—",
+        nameSource: "error",
+        status: "invalid",
+      });
       invalidCount++;
     }
 
-    bar.update(validCount + invalidCount, { valid: validCount, invalid: invalidCount });
+    bar.update(validCount + suspiciousCount + blockedCount + invalidCount, {
+      valid: validCount,
+      suspicious: suspiciousCount,
+      blocked: blockedCount,
+      invalid: invalidCount,
+    });
 
     if (delay > 0) await sleep(delay);
   }
@@ -187,25 +242,34 @@ export async function checkNumbers({
 
   const reportPath = writeSummaryReport({
     outputPath,
+    invalidPath,
     total: numbers.length,
     valid: validCount,
+    suspicious: suspiciousCount,
+    blocked: blockedCount,
     invalid: invalidCount,
     duration,
   });
 
-  console.log("\n" + chalk.bold("─".repeat(52)));
+  const waTotal = validCount + suspiciousCount + blockedCount;
+
+  console.log("\n" + chalk.bold("─".repeat(56)));
   console.log(chalk.bold("  📊  Results Summary"));
-  console.log(chalk.bold("─".repeat(52)));
-  console.log(`  Total checked  : ${chalk.white.bold(numbers.length)}`);
-  console.log(`  Has WhatsApp   : ${chalk.green.bold(validCount)}`);
-  console.log(`  No WhatsApp    : ${chalk.red.bold(invalidCount)}`);
-  console.log(`  Duration       : ${chalk.yellow(duration)}`);
-  console.log(chalk.bold("─".repeat(52)));
-  console.log(`\n  ${chalk.green("✔")} Valid CSV saved to      : ${chalk.white(outputPath)}`);
-  if (invalidPath) {
-    console.log(`  ${chalk.red("✖")} Invalid CSV saved to    : ${chalk.white(invalidPath)}`);
-  }
-  console.log(`  📄 Report saved to       : ${chalk.white(reportPath)}`);
+  console.log(chalk.bold("─".repeat(56)));
+  console.log(`  Total checked   : ${chalk.white.bold(numbers.length)}`);
+  console.log(`  ✔  Valid        : ${chalk.green.bold(validCount)}`);
+  console.log(`  ⚠  Suspicious  : ${chalk.yellow.bold(suspiciousCount)}`);
+  console.log(`  ⛔  Blocked     : ${chalk.magenta.bold(blockedCount)}`);
+  console.log(`  ✖  No WhatsApp  : ${chalk.red.bold(invalidCount)}`);
+  console.log(`  Duration        : ${chalk.yellow(duration)}`);
+  console.log(chalk.bold("─".repeat(56)));
+  console.log(
+    `\n  ${chalk.green("✔")} WA numbers CSV  : ${chalk.white(outputPath)}  ${chalk.gray(`(${waTotal} rows)`)}`
+  );
+  console.log(
+    `  ${chalk.red("✖")} Invalid CSV     : ${chalk.white(invalidPath)}  ${chalk.gray(`(${invalidCount} rows)`)}`
+  );
+  console.log(`  📄 Report        : ${chalk.white(reportPath)}`);
   console.log();
 
   await client.destroy();

@@ -34,13 +34,13 @@ program
   )
   .option(
     "-o, --output <file>",
-    "Output file for valid WhatsApp numbers",
-    "whatsapp_valid.txt"
+    "Output CSV for WhatsApp numbers (valid / suspicious / blocked)",
+    "whatsapp_valid.csv"
   )
   .option(
     "--invalid <file>",
-    "Output file for invalid numbers (optional)",
-    ""
+    "Output CSV for numbers not on WhatsApp",
+    "whatsapp_invalid.csv"
   )
   .option(
     "-d, --delay <ms>",
@@ -72,12 +72,18 @@ program
 
     // Resolve output paths
     const outputPath = path.resolve(process.cwd(), options.output);
-    const invalidPath = options.invalid
-      ? path.resolve(process.cwd(), options.invalid)
-      : null;
+    const invalidPath = path.resolve(process.cwd(), options.invalid);
 
     const delay = parseInt(options.delay, 10);
     const saveSession = options.session !== false;
+
+    // Status legend
+    console.log(chalk.gray("  Status legend:"));
+    console.log(chalk.green("  ✔  valid")      + chalk.gray("      = registered, has a name or profile pic"));
+    console.log(chalk.yellow("  ⚠  suspicious") + chalk.gray("  = registered but fully anonymous"));
+    console.log(chalk.magenta("  ⛔  blocked")    + chalk.gray("     = registered but contact lookup failed (likely blocked you)"));
+    console.log(chalk.red("  ✖  invalid")    + chalk.gray("     = not on WhatsApp"));
+    console.log();
 
     // Run checker
     await checkNumbers({
